@@ -1,6 +1,6 @@
-use pty_test::signals;
-use pty_test::tui;
-use pty_test::term;
+use terminal::signals;
+use terminal::tui;
+use terminal::term;
 use std::error::Error;
 use std::sync::mpsc::channel;
 use std::sync::Arc;
@@ -12,10 +12,10 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let mut terms = term::TerminalList::new();
 
-    let t = pty_test::term::ManagedTerminal::start(tx.clone(), "top".into(), vec!["-b".into()])?;
+    let t = term::ManagedTerminal::start(tx.clone(), "top".into(), vec!["-b".into()])?;
     terms.add(t);
 
-    let t = pty_test::term::ManagedTerminal::start(tx.clone(), "zsh".into(), vec![])?;
+    let t = term::ManagedTerminal::start(tx.clone(), "zsh".into(), vec![])?;
     terms.add(t);
 
     let signal_tx = tx.clone();
