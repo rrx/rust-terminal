@@ -1,4 +1,5 @@
 use crate::app::Command;
+use crate::term::*;
 use crate::listener::MyEventListener;
 use alacritty_terminal::event::Event as TerminalEvent;
 use alacritty_terminal::event::WindowSize;
@@ -19,29 +20,41 @@ use std::sync::mpsc::Receiver;
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
 
-pub fn input_event_to_command() -> Result<Option<Command>, Box<dyn Error>> {
-    let msg = match event::read()? {
-        Event::Resize(width, height) => Some(Command::Msg(Msg::Resize(WindowSize {
+pub fn input_event_to_command() -> Result<Vec<Command>, Box<dyn Error>> {
+    let commands = match event::read()? {
+        Event::Resize(width, height) => vec![Command::Msg(Msg::Resize(WindowSize {
             num_lines: height,
             num_cols: width,
             cell_width: 1,
             cell_height: 1,
-        }))),
+        }))],
         Event::Key(KeyEvent {
             code: KeyCode::Char('q'),
             modifiers: KeyModifiers::CONTROL,
             kind: _,
             state: _,
-        }) => Some(Command::Exit),
+        }) => vec![Command::Exit],
         Event::Key(KeyEvent {
             code: KeyCode::Char('z'),
             modifiers: KeyModifiers::CONTROL,
             kind: _,
             state: _,
-        }) => Some(Command::Suspend),
-        _ => None, //{} //unimplemented!(),
+        }) => vec![Command::Suspend],
+        Event::Key(KeyEvent {
+            code: KeyCode::Char('n'),
+            modifiers: KeyModifiers::CONTROL,
+            kind: _,
+            state: _,
+        }) => vec![Command::NextWindow, Command::TerminalEvent(TerminalEvent::Wakeup)],
+        Event::Key(KeyEvent {
+            code: KeyCode::Char('p'),
+            modifiers: KeyModifiers::CONTROL,
+            kind: _,
+            state: _,
+        }) => vec![Command::PrevWindow, Command::TerminalEvent(TerminalEvent::Wakeup)],
+        _ => vec![],
     };
-    Ok(msg)
+    Ok(commands)
 }
 
 fn dump_term<W>(
@@ -74,22 +87,23 @@ where
 }
 
 pub fn display(
-    terminal: Arc<FairMutex<Term<MyEventListener>>>,
+    mut terms: TerminalList<ManagedTerminal>,
     rx: Receiver<Command>,
 ) -> Result<(), Box<dyn Error>> {
-    let mut stdout = std::io::stdout();
-
-    // handle panic
+    // handle panic, by cleaning up the terminal
     use std::panic;
     panic::set_hook(Box::new(move |w| {
         let mut stdout = std::io::stdout();
-        let _ = enter(&mut stdout);
+        let _ = exit(&mut stdout);
         log::info!("Custom panic hook: {:?}", w);
         log::info!("{:?}", backtrace::Backtrace::new());
     }));
 
+    let mut stdout = std::io::stdout();
     enter(&mut stdout)?;
     let mut has_terminal = true;
+
+    let mut terminal = terms.get().terminal.clone();
 
     loop {
         let result = rx.recv();
@@ -104,7 +118,7 @@ pub fn display(
             }
             Ok(Command::TerminalEvent(TerminalEvent::Wakeup)) => {
                 log::info!("rx wakeup");
-                dump_term(&terminal, &mut stdout);
+                dump_term(&terminal, &mut stdout)?;
             }
             Ok(Command::Suspend) => {
                 log::info!("suspend");
@@ -124,6 +138,16 @@ pub fn display(
                 }
                 has_terminal = !has_terminal;
             }
+    
+            Ok(Command::NextWindow) => {
+                terms.next();
+                terminal = terms.get().terminal.clone();
+            }
+
+            Ok(Command::PrevWindow) => {
+                terms.prev();
+                terminal = terms.get().terminal.clone();
+            }
 
             Ok(event) => {
                 log::info!("rx event: {:?}", event);
@@ -139,23 +163,31 @@ pub fn display(
 }
 
 pub fn input_thread(tx: Sender<Command>) {
+    let mut done = false;
     loop {
         match input_event_to_command() {
-            Ok(Some(Command::Exit)) => {
-                log::info!("Shutdown");
-                break;
-            }
-            Ok(Some(command)) => {
-                let _ = tx.send(command);
-            }
-            Ok(None) => {
-                break;
+            Ok(commands) => {
+                for command in commands {
+                    match command {
+                        Command::Exit => {
+                            log::info!("Shutdown");
+                            done = true;
+                        }
+                        _ => {
+                            let _ = tx.send(command);
+                        }
+                    };
+                }
             }
             Err(e) => {
                 log::error!("Error: {}", e);
-                break;
+                done = true;
             }
-        };
+        }
+
+        if done {
+            break;
+        }
     }
     let _ = tx.send(Command::Exit);
     log::info!("input thread exit");

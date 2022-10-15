@@ -9,4 +9,6 @@ pub enum Command {
     Resume,
     Toggle,
     Exit,
+    NextWindow,
+    PrevWindow
 }
